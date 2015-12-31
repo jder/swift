@@ -1289,6 +1289,12 @@ ERROR(failable_initializer_override,sema_tcd,none,
       (DeclName))
 NOTE(nonfailable_initializer_override_here,sema_tcd,none,
      "non-failable initializer %0 overridden here", (DeclName))
+WARNING(method_sometimes_hidden_extension,sema_tcd,none,
+      "method %0 has the same name as an extension to the %1 protocol "
+      "but does not override it", (DeclName, DeclName))
+NOTE(hiding_extension_method_here,sema_tcd,none,
+      "this implementation will be used when accessed via a "
+      "variable of %0 type", (DeclName))
 
 NOTE(property_override_here,sema_tcd,none,
      "attempt to override property here", ())

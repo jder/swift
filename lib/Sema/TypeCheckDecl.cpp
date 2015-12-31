@@ -227,6 +227,8 @@ static void addImplicitConformances(
 static void validateAttributes(TypeChecker &TC, Decl *VD);
 static void validateFixedLayoutAttribute(TypeChecker &TC, NominalTypeDecl *D);
 
+static void validateProtocolExtensionOverloads(TypeChecker &TC, FuncDecl *FD);
+
 void TypeChecker::resolveSuperclass(ClassDecl *classDecl) {
   IterativeTypeChecker ITC(*this);
   ITC.satisfy(requestTypeCheckSuperclass(classDecl));
@@ -4076,7 +4078,9 @@ public:
           }
         }
       }
-
+      
+      validateProtocolExtensionOverloads(TC, FD);
+      
       Optional<ObjCReason> isObjC = shouldMarkAsObjC(TC, FD);
 
       ProtocolDecl *protocolContext = dyn_cast<ProtocolDecl>(
@@ -7141,6 +7145,47 @@ static void validateAttributes(TypeChecker &TC, Decl *D) {
         TC.diagnose(AvAttr->getLocation(),
                     diag::unavailable_method_non_objc_protocol);
         D->getAttrs().removeAttribute(AvAttr);
+      }
+    }
+  }
+}
+
+/// Diagnose when a func is potentially confused with a method implemented
+/// only in a protocol extension.
+static void validateProtocolExtensionOverloads(TypeChecker &TC, FuncDecl *FD) {
+  if (!FD->hasName())
+    return;
+  
+  NominalTypeDecl *parentType = FD->getDeclContext()->isNominalTypeOrNominalTypeExtensionContext();
+  if (parentType) {
+    auto protocols = parentType->getAllProtocols();
+    for (auto proto : protocols) {
+      NameLookupOptions lookupOptions = defaultMemberLookupOptions | NameLookupFlags::ProtocolMembers;
+      LookupResult lookups = TC.lookupMember(FD->getDeclContext(),
+                                             proto->getDeclaredInterfaceType(), FD->getFullName(),
+                                             lookupOptions);
+      // Only if all of the found methods are in extensions (i.e. not part of the
+      // protocol proper) can this be confused.
+      bool foundInProtocol = false;
+      SmallVector<FuncDecl *, 4> hidingFuncDecls;
+
+      for (auto lookup : lookups) {
+        auto member = lookup.Decl;
+        FuncDecl *sameNameFunc = dyn_cast<FuncDecl>(member);
+        if (sameNameFunc) {
+          if (isa<ProtocolDecl>(sameNameFunc->getDeclContext())) {
+            foundInProtocol = true;
+            break;
+          } else {
+            hidingFuncDecls.push_back(sameNameFunc);
+          }
+        }
+      }
+      if (!hidingFuncDecls.empty() && !foundInProtocol) {
+        TC.diagnose(FD, diag::method_sometimes_hidden_extension, FD->getFullName(), proto->getName());
+        for (auto hidingDecl : hidingFuncDecls)
+          TC.diagnose(hidingDecl, diag::hiding_extension_method_here, proto->getFullName());
+        break;
       }
     }
   }
