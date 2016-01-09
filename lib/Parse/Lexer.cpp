@@ -340,73 +340,92 @@ void Lexer::skipHashbang() {
   skipToEndOfLine();
 }
 
-/// skipSlashStarComment - /**/ comments are skipped (treated as whitespace).
-/// Note that (unlike in C) block comments can be nested.
-void Lexer::skipSlashStarComment() {
+static const char *skipSlashStarComment(const char *CurPtr,
+                                        const char *BufferEnd,
+                                        DiagnosticEngine *Diags = nullptr,
+                                        bool *outSawNewline = nullptr) {
   const char *StartPtr = CurPtr-1;
   assert(CurPtr[-1] == '/' && CurPtr[0] == '*' && "Not a /* comment");
   // Make sure to advance over the * so that we don't incorrectly handle /*/ as
   // the beginning and end of the comment.
   ++CurPtr;
   
+  if (outSawNewline)
+    *outSawNewline = false;
+  
   // /**/ comments can be nested, keep track of how deep we've gone.
   unsigned Depth = 1;
   
   while (1) {
     switch (*CurPtr++) {
-    case '*':
-      // Check for a '*/'
-      if (*CurPtr == '/') {
-        ++CurPtr;
-        if (--Depth == 0)
-          return;
-      }
-      break;
-    case '/':
-      // Check for a '/*'
-      if (*CurPtr == '*') {
-        ++CurPtr;
-        ++Depth;
-      }
-      break;
-
-    case '\n':
-    case '\r':
-      NextToken.setAtStartOfLine(true);
-      break;
-
-    default:
-      // If this is a "high" UTF-8 character, validate it.
-      if ((signed char)(CurPtr[-1]) < 0) {
-        --CurPtr;
-        const char *CharStart = CurPtr;
-        if (validateUTF8CharacterAndAdvance(CurPtr, BufferEnd) == ~0U)
-          diagnose(CharStart, diag::lex_invalid_utf8);
-      }
-
-      break;   // Otherwise, eat other characters.
-    case 0:
-      // If this is a random nul character in the middle of a buffer, skip it as
-      // whitespace.
-      if (CurPtr-1 != BufferEnd) {
-        diagnoseEmbeddedNul(Diags, CurPtr-1);
+      case '*':
+        // Check for a '*/'
+        if (*CurPtr == '/') {
+          ++CurPtr;
+          if (--Depth == 0)
+            return CurPtr;
+        }
         break;
-      }
-      
-      // Otherwise, we have an unterminated /* comment.
-      --CurPtr;
-
-      // Count how many levels deep we are.
-      llvm::SmallString<8> Terminator("*/");
-      while (--Depth != 0)
-        Terminator += "*/";
-
-      const char *EOL = (CurPtr[-1] == '\n') ? (CurPtr - 1) : CurPtr;
-      diagnose(EOL, diag::lex_unterminated_block_comment)
-        .fixItInsert(getSourceLoc(EOL), Terminator);
-      diagnose(StartPtr, diag::lex_comment_start);
-      return;
+      case '/':
+        // Check for a '/*'
+        if (*CurPtr == '*') {
+          ++CurPtr;
+          ++Depth;
+        }
+        break;
+        
+      case '\n':
+      case '\r':
+        if (outSawNewline)
+          *outSawNewline = true;
+        break;
+        
+      default:
+        // If this is a "high" UTF-8 character, validate it.
+        if ((signed char)(CurPtr[-1]) < 0) {
+          --CurPtr;
+          const char *CharStart = CurPtr;
+          if (validateUTF8CharacterAndAdvance(CurPtr, BufferEnd) == ~0U) {
+            if (Diags)
+              Diags->diagnose(Lexer::getSourceLoc(CharStart), diag::lex_invalid_utf8);
+          }
+        }
+        
+        break;   // Otherwise, eat other characters.
+      case 0:
+        // If this is a random nul character in the middle of a buffer, skip it as
+        // whitespace.
+        if (CurPtr-1 != BufferEnd) {
+          diagnoseEmbeddedNul(Diags, CurPtr-1);
+          break;
+        }
+        
+        // Otherwise, we have an unterminated /* comment.
+        --CurPtr;
+        
+        // Count how many levels deep we are.
+        llvm::SmallString<8> Terminator("*/");
+        while (--Depth != 0)
+          Terminator += "*/";
+        
+        const char *EOL = (CurPtr[-1] == '\n') ? (CurPtr - 1) : CurPtr;
+        if (Diags) {
+          Diags->diagnose(Lexer::getSourceLoc(EOL), diag::lex_unterminated_block_comment)
+          .fixItInsert(Lexer::getSourceLoc(EOL), Terminator);
+          Diags->diagnose(Lexer::getSourceLoc(StartPtr), diag::lex_comment_start);
+        }
+        return CurPtr;
     }
+  }
+}
+
+/// skipSlashStarComment - /**/ comments are skipped (treated as whitespace).
+/// Note that (unlike in C) block comments can be nested.
+void Lexer::skipSlashStarComment() {
+  bool sawNewline;
+  CurPtr = ::skipSlashStarComment(CurPtr, BufferEnd, Diags, &sawNewline);
+  if (sawNewline) {
+    NextToken.setAtStartOfLine(true);
   }
 }
 
@@ -568,11 +587,14 @@ void Lexer::lexIdentifier() {
 }
 
 /// Is the operator beginning at the given character "left-bound"?
-static bool isLeftBound(const char *tokBegin, const char *bufferBegin) {
-  // The first character in the file is not left-bound.
-  if (tokBegin == bufferBegin) return false;
+bool Lexer::isLeftBound(const char *tokBegin) {
+  const char *prevCharacter = findPreviousCharacterSkippingComments(tokBegin);
 
-  switch (tokBegin[-1]) {
+  // The first character in the file is not left-bound.
+  if (prevCharacter == nullptr)
+    return false;
+
+  switch (*prevCharacter) {
   case ' ': case '\r': case '\n': case '\t': // whitespace
   case '(': case '[': case '{':              // opening delimiters
   case ',': case ';': case ':':              // expression separators
@@ -586,8 +608,9 @@ static bool isLeftBound(const char *tokBegin, const char *bufferBegin) {
 
 /// Is the operator ending at the given character (actually one past the end)
 /// "right-bound"?
-static bool isRightBound(const char *tokEnd, bool isLeftBound) {
-  switch (*tokEnd) {
+bool Lexer::isRightBound(const char *tokEnd, bool isLeftBound) {
+  const char *nextCharacter = findNextCharacterSkippingComments(tokEnd);
+  switch (*nextCharacter) {
   case ' ': case '\r': case '\n': case '\t': // whitespace
   case ')': case ']': case '}':              // closing delimiters
   case ',': case ';': case ':':              // expression separators
@@ -602,6 +625,73 @@ static bool isRightBound(const char *tokEnd, bool isLeftBound) {
   default:
     return true;
   }
+}
+
+// Find the next character at or after the given location which is not
+// part of a comment. If all following characters are comments, return
+// a pointer to the EOF nul byte.
+// Assumes searchStart is not already within a comment.
+const char *Lexer::findNextCharacterSkippingComments(const char *searchStart) {
+  while (searchStart[0] == '/') {
+    switch (searchStart[1]) {
+      case '*':
+        searchStart = ::skipSlashStarComment(searchStart + 1, BufferEnd);
+        break;
+      case '/':
+        ++searchStart;
+        while (++searchStart < BufferEnd) {
+          if (*searchStart == '\n' || *searchStart == '\r') {
+            break;
+          }
+        }
+        break;
+      default:
+        return searchStart;
+    }
+  }
+
+  return searchStart;
+}
+
+static bool stringEndsAt(const char * const toFind, 
+                         const char *loc, 
+                         const char *bufStart) {
+  size_t len = strlen(toFind);
+  return loc >= bufStart + len - 1 && StringRef(loc - len + 1, len).equals(toFind);
+}
+
+// Find the character strictly before the given location which is not
+// part of a comment, or NULL if there is no such character (i.e. start of 
+// file is hit while searching)
+// Assumes searchEnd is not already within a comment.
+const char *Lexer::findPreviousCharacterSkippingComments(const char *searchEnd) {
+  if (searchEnd == BufferStart)
+    return nullptr;
+
+  // Now points to our current candidate character, which we may return or
+  // skip back over comments.
+  const char *Now = searchEnd - 1;
+  int Nesting = 0;
+  
+  while (Now >= BufferStart
+         && (Nesting > 0 || stringEndsAt("*/", Now, BufferStart))) {
+    if (stringEndsAt("*/", Now, BufferStart)) {
+      Nesting++;
+      Now -= 2;
+    } else if (stringEndsAt("/*", Now, BufferStart)) {
+      Nesting--;
+      Now -= 2;
+    } else {
+      Now--;
+    }
+  }
+  
+  // If we hit BufStart before exiting comments, there is no previous
+  // non-comment character to return.
+  if (Nesting > 0) 
+    return nullptr;
+  
+  return Now;
 }
 
 /// lexOperatorIdentifier - Match identifiers formed out of punctuation.
@@ -628,7 +718,7 @@ void Lexer::lexOperatorIdentifier() {
   // Decide between the binary, prefix, and postfix cases.
   // It's binary if either both sides are bound or both sides are not bound.
   // Otherwise, it's postfix if left-bound and prefix if right-bound.
-  bool leftBound = isLeftBound(TokStart, BufferStart);
+  bool leftBound = isLeftBound(TokStart);
   bool rightBound = isRightBound(CurPtr, leftBound);
 
   // Match various reserved words.
@@ -704,14 +794,18 @@ void Lexer::lexOperatorIdentifier() {
     // If there is a "//" in the middle of an identifier token, it starts
     // a single-line comment.
     auto Pos = StringRef(TokStart, CurPtr-TokStart).find("//");
-    if (Pos != StringRef::npos)
+    if (Pos != StringRef::npos) {
       CurPtr = TokStart+Pos;
+      rightBound = isRightBound(CurPtr, leftBound);
+    }
 
     // If there is a "/*" in the middle of an identifier token, it starts
     // a multi-line comment.
     Pos = StringRef(TokStart, CurPtr-TokStart).find("/*");
-    if (Pos != StringRef::npos)
+    if (Pos != StringRef::npos) {
       CurPtr = TokStart+Pos;
+      rightBound = isRightBound(CurPtr, leftBound);
+    }
 
     // Verify there is no "*/" in the middle of the identifier token, we reject
     // it as potentially ending a block comment.
@@ -1654,12 +1748,12 @@ Restart:
   case '!':
     if (InSILBody)
       return formToken(tok::sil_exclamation, TokStart);
-    if (isLeftBound(TokStart, BufferStart))
+    if (isLeftBound(TokStart))
       return formToken(tok::exclaim_postfix, TokStart);
     return lexOperatorIdentifier();
   
   case '?':
-    if (isLeftBound(TokStart, BufferStart))
+    if (isLeftBound(TokStart))
       return formToken(tok::question_postfix, TokStart);
     return lexOperatorIdentifier();
 
@@ -1890,6 +1984,3 @@ StringRef Lexer::getIndentationForLine(SourceManager &SM, SourceLoc Loc) {
 
   return StringRef(StartOfLine, EndOfIndentation - StartOfLine);
 }
-
-
-

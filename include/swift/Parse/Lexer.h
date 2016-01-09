@@ -437,6 +437,11 @@ private:
 
   void tryLexEditorPlaceholder();
   const char *findEndOfCurlyQuoteStringLiteral(const char*);
+
+  bool isLeftBound(const char *tokBegin);
+  bool isRightBound(const char *tokEnd, bool isLeftBound);
+  const char *findNextCharacterSkippingComments(const char *searchStart);
+  const char *findPreviousCharacterSkippingComments(const char *searchEnd);
 };
   
 } // end namespace swift

@@ -511,7 +511,7 @@ func foo2(bar! = baz) {}
 class Baz {}
 class Bar<T> {}
 func f1(a: Bar<Baz!>) {}
-func f2(a: Bar<Baz /* some comment */!>) {}
+func f2(a: Bar<Baz/* some comment */!>) {}
 
 
 // rdar://19605567
