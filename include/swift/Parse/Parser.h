@@ -221,6 +221,15 @@ public:
       CC.pop();
     }
   };
+  
+  /// A RAII object for parsing a constant expression
+  class ParseConstantExpression : public LocalContext {
+  private:
+    ContextChange CC;
+  public:
+    ParseConstantExpression(Parser &P, DeclContext *DC): CC(P, DC, this) {
+    }
+  };
 
   /// A RAII object for temporarily changing whether an operator starting with
   /// '>' is an operator.

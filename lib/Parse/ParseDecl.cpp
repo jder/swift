@@ -2609,6 +2609,8 @@ ParserResult<IfConfigDecl> Parser::parseDeclIfConfig(ParseDeclOptions Flags) {
       if (Tok.isAtStartOfLine())
         diagnose(ClauseLoc, diag::expected_build_configuration_expression);
       
+      ParseConstantExpression PCE(*this, CurDeclContext);
+      
       // Evaluate the condition.
       ParserResult<Expr> Configuration = parseExprSequence(diag::expected_expr,
                                                            true, true);
@@ -4378,6 +4380,8 @@ ParserStatus Parser::parseDeclEnumCase(ParseDeclOptions Flags,
       // "case" label.
       llvm::SaveAndRestore<decltype(InVarOrLetPattern)>
       T(InVarOrLetPattern, Parser::IVOLP_InMatchingPattern);
+      ParseConstantExpression PCE(*this, CurDeclContext);
+
       parseMatchingPattern(/*isExprBasic*/false);
     }
     if (NameIsNotIdentifier) {
@@ -4413,7 +4417,6 @@ ParserStatus Parser::parseDeclEnumCase(ParseDeclOptions Flags,
     
     // See if there's a raw value expression.
     SourceLoc EqualsLoc;
-    auto NextLoc = peekToken().getLoc();
     ParserResult<Expr> RawValueExpr;
     LiteralExpr *LiteralRawValueExpr = nullptr;
     if (Tok.is(tok::equal)) {
@@ -4421,6 +4424,7 @@ ParserStatus Parser::parseDeclEnumCase(ParseDeclOptions Flags,
       {
         CodeCompletionCallbacks::InEnumElementRawValueRAII
             InEnumElementRawValue(CodeCompletion);
+        ParseConstantExpression PCE(*this, CurDeclContext);
         RawValueExpr = parseExpr(diag::expected_expr_enum_case_raw_value);
       }
       if (RawValueExpr.hasCodeCompletion()) {
@@ -4428,7 +4432,6 @@ ParserStatus Parser::parseDeclEnumCase(ParseDeclOptions Flags,
         return Status;
       }
       if (RawValueExpr.isNull()) {
-        diagnose(NextLoc, diag::nonliteral_enum_case_raw_value);
         Status.setIsParseError();
         return Status;
       }

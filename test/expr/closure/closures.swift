@@ -318,3 +318,14 @@ func r21375863() {
     [UInt8](count: width*height, repeatedValue: 0)
   }
 }
+
+// SR-510 `case Foo = {!@#$!@#$}` compiles and drops the case
+// and other cases that used to produce no errors
+enum SR510 {
+  case Foo = {} // expected-error {{raw value for enum case must be a literal}}
+}
+
+#if {}  // expected-error {{unexpected configuration expression type}}
+#endif
+
+typealias foo = (Int = {}) // expected-error {{default argument not permitted in a tuple type}}

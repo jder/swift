@@ -767,6 +767,8 @@ MagicIdentifierLiteralExpr::Kind getMagicIdentifierLiteralKind(tok Kind) {
 ///     expr-trailing-closure
 ///
 ParserResult<Expr> Parser::parseExprPostfix(Diag<> ID, bool isExprBasic) {
+  assert(CurLocalContext && "no local context parsing expression");
+  
   ParserResult<Expr> Result;
   switch (Tok.getKind()) {
   case tok::integer_literal: {
@@ -1852,6 +1854,7 @@ parseClosureSignatureIfPresent(SmallVectorImpl<CaptureListEntry> &captureList,
 
 ParserResult<Expr> Parser::parseExprClosure() {
   assert(Tok.is(tok::l_brace) && "Not at a left brace?");
+  assert(CurLocalContext && "no local context parsing closure");
 
   // We may be parsing this closure expr in a matching pattern context.  If so,
   // reset our state to not be in a pattern for any recursive pattern parses.
@@ -1871,16 +1874,6 @@ ParserResult<Expr> Parser::parseExprClosure() {
   parseClosureSignatureIfPresent(captureList, params, throwsLoc, arrowLoc,
                                  explicitResultType, inLoc);
 
-  // If the closure was created in the context of an array type signature's
-  // size expression, there will not be a local context. A parse error will
-  // be reported at the signature's declaration site.
-  if (!CurLocalContext) {
-    skipUntil(tok::r_brace);
-    if (Tok.is(tok::r_brace))
-      consumeToken();
-    return makeParserError();
-  }
-  
   unsigned discriminator = CurLocalContext->claimNextClosureDiscriminator();
 
   // Create the closure expression and enter its context.

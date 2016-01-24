@@ -1746,6 +1746,8 @@ ParserResult<Stmt> Parser::parseStmtIfConfig(BraceItemListKind Kind) {
     } else {
       if (Tok.isAtStartOfLine())
         diagnose(ClauseLoc, diag::expected_build_configuration_expression);
+
+      ParseConstantExpression PCE(*this, CurDeclContext);
       
       // Evaluate the condition.
       ParserResult<Expr> Configuration = parseExprSequence(diag::expected_expr,
